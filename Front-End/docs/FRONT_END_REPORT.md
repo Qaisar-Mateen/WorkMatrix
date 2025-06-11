@@ -444,3 +444,126 @@ This hook is designed to gather and provide system performance metrics from the 
     *   Logs errors to the console if fetching CPU metrics or general system metrics fails.
 
 The hook provides a way to monitor client-side performance, which can be useful for diagnostics or understanding application resource consumption on the user's device.
+
+### 5.7. `lib/api/` Directory
+
+This directory is responsible for configuring and exporting the HTTP client used for making API requests to the backend or other external services.
+
+#### 5.7.1. `lib/api/client.ts`
+
+This file configures and exports an Axios instance (`apiClient`) for making HTTP requests. It includes interceptors for request and response handling, token management, CSRF protection, and offline support.
+
+**Key Features and Functionality:**
+
+*   **Axios Instance Creation:**
+    *   Creates an Axios instance with a `baseURL` (from `process.env.NEXT_PUBLIC_API_URL` or defaulting to a Supabase URL `https://cfxmnmjjfjhztgznzebm.supabase.co`), a `timeout` of 10 seconds, and default `Content-Type` header set to `application/json`.
+*   **Request Interceptor:**
+    *   **Token Injection:** Retrieves a Supabase auth token (`supabase.auth.token`) from `localStorage` and adds it as a `Bearer` token to the `Authorization` header of outgoing requests.
+    *   **CSRF Token Injection:** Retrieves a CSRF token (`XSRF-TOKEN`) from cookies and adds it to the `X-XSRF-TOKEN` header.
+    *   **Offline Handling:**
+        *   Checks `navigator.onLine`. If offline, it queues the request instead of sending it immediately. The request is wrapped in a Promise that resolves when the request is later processed.
+*   **Response Interceptor:**
+    *   **Successful Responses:** Returns the response directly.
+    *   **Error Handling:**
+        *   **Token Refresh (401 Unauthorized):** If a 401 error occurs and it's not a retry attempt (`_retry` flag):
+            *   It attempts to refresh the Supabase token using the `refreshToken` from `localStorage` by making a POST request to `/auth/v1/token` (relative to the `baseURL`, which is Supabase).
+            *   If successful, it updates the `access_token` and `refresh_token` in `localStorage` and retries the original request with the new token.
+            *   If refresh fails, it redirects the user to `/login`.
+        *   **Other HTTP Errors:**
+            *   `401` (if not handled by refresh or if refresh fails): Shows a toast "Please log in to continue" and redirects to `/login`.
+            *   `403 Forbidden`: Shows a toast "You do not have permission to perform this action".
+            *   `404 Not Found`: Shows a toast "The requested resource was not found".
+            *   `429 Too Many Requests`: Shows a toast "Too many requests. Please try again later" and queues the request for a later attempt.
+            *   `500 Internal Server Error`: Shows a toast "An unexpected error occurred. Please try again later". If the request method is not POST, PUT, or DELETE, it queues the request for a later attempt.
+            *   **Default Error:** For other response errors, it extracts a message from `error.response.data.message` if available, or shows a generic "An error occurred" toast.
+        *   **Network Errors (`error.request`):** Shows a toast "Network error. Please check your connection" and queues the original request for retry.
+        *   **Other Errors:** Shows a toast "An unexpected error occurred".
+*   **Request Queue for Offline/Retry:**
+    *   `requestQueue`: An array to hold requests that failed due to being offline or needing a retry (e.g., for 429 or 500 errors).
+    *   `processQueue`: An asynchronous function to process queued requests. It retries each request up to `MAX_RETRIES` (3) times with an exponential backoff (`RETRY_DELAY`).
+    *   An event listener for the `online` event on the `window` object triggers `processQueue` when the application comes back online.
+
+This `apiClient` provides a robust way to handle API communication, including common concerns like authentication, authorization, error handling, and basic offline support with request queuing and retries.
+
+## 6. `app/` Directory Analysis: Routing and Page Structure
+
+The `app/` directory is the core of the Next.js application, utilizing the App Router paradigm. It contains all UI and routing logic, including layouts, pages, loading states, error boundaries, and API routes.
+
+Route groups (directories enclosed in parentheses, like `(auth)`) are used to organize routes without affecting the URL path. They are often used to apply specific layouts or contexts to a section of the application.
+
+I will now explore the main route groups and specific route segments.
+
+### 6.1. `(auth)` Route Group
+
+This route group is likely used for authentication-related pages like login, registration, password reset, etc. It has its own `layout.tsx`.
+
+#### 6.1.1. `app/(auth)/layout.tsx`
+
+This layout component defines the structure for pages within the `(auth)` group (e.g., `/login`, `/register`).
+
+*   **`AuthWrapper`:** Wraps the content with an `<AuthWrapper>` component (from `@/components/auth/AuthWrapper`) with `requireAuth={false}`. This suggests that this wrapper might handle redirection if a user is already authenticated and tries to access an auth page (e.g., redirecting from `/login` to a dashboard if already logged in).
+*   **Structure:**
+    *   A two-column grid layout on larger screens (`lg:grid-cols-2`).
+    *   **Left Side (Auth Form):**
+        *   Contains a `<Header>` component (from `@/components/layout/header`) with navigation and user navigation disabled (`showNav={false}`, `showUserNav={false}`). The header is styled to be transparent and without a border.
+        *   Renders the `children` (the actual page content, e.g., login form, registration form).
+    *   **Right Side (Informational/Branding - hidden on small screens):**
+        *   Displays a welcome message, the application name "WorkMatrix", and a brief description of its purpose.
+        *   Styled with a gradient background.
+
+This layout provides a consistent two-panel design for authentication screens, with the form on one side and branding/information on the other for larger displays.
+
+### 6.2. `(dashboard)` Route Group
+
+This route group is intended for all authenticated user dashboards (e.g., admin, employee). It will have its own layout and loading state.
+
+#### 6.2.1. `app/(dashboard)/layout.tsx`
+
+This layout component defines the main structure for all pages within the `(dashboard)` route group (e.g., `/admin/dashboard`, `/employee/dashboard`, `/profile`).
+
+*   **Authentication & Authorization:**
+    *   It wraps the content with `<AuthWrapper requireAuth={true}>`. This ensures that only authenticated users can access routes within this group. The `AuthWrapper` (presumably from `@/components/auth/AuthWrapper`) would handle redirection to a login page if the user is not authenticated.
+*   **Main Structure:**
+    *   Uses a `<MainLayout>` component (presumably from `@/components/layout/main-layout` or a similar path). This component likely provides the common dashboard shell, including:
+        *   A `<Header>` component (from `@/components/layout/header`), which is configured to show navigation (`showNav={true}`) and user navigation (`showUserNav={true}`).
+        *   A `<Sidebar>` component (from `@/components/layout/sidebar`).
+        *   The main content area where `children` (the actual page content) are rendered.
+*   **Providers:**
+    *   The layout is wrapped with `<QueryProvider>` (likely for TanStack Query/React Query) and `<ToastProvider>` (likely for Sonner toasts). This makes client-side data fetching capabilities and toast notifications available to all dashboard pages.
+*   **Styling:**
+    *   The main `div` has classes for flex layout, height, and overflow, suggesting a common dashboard structure with a fixed header/sidebar and scrollable content area.
+
+This layout establishes a consistent and authenticated environment for all dashboard-related views, providing common UI elements like header, sidebar, and necessary context providers.
+
+#### 6.2.2. `app/(dashboard)/loading.tsx`
+
+This file defines a loading UI that will be displayed while the content of a route segment within the `(dashboard)` group is loading. This is part of Next.js's built-in support for loading states via `loading.tsx` conventions.
+
+*   **Functionality:**
+    *   It exports a default function component named `Loading`.
+    *   Renders a `<DashboardShell>` component (presumably a common shell for dashboard pages, from `@/components/layout/DashboardShell` or similar).
+    *   Inside the shell, it displays a `<PageLoading />` component (from `@/components/layout/page-loading`). This component is responsible for rendering the actual loading indicator (e.g., a spinner, skeleton screen).
+
+*   **Purpose**: Displays a loading state for the dashboard pages.
+*   **Key Components**:
+    *   Uses `<DashboardShell>` for consistent dashboard structure.
+    *   Renders a `<PageLoading />` component to indicate that content is being loaded.
+
+### 6.3. `(marketing)` Route Group
+
+#### `app/(marketing)/layout.tsx`
+
+*   **Purpose**: Defines the layout for the marketing-related pages of the application (e.g., home page, features, about).
+*   **Functionality**:
+    *   Provides a consistent header and navigation for marketing pages.
+    *   The header is sticky and includes the application name/logo ("WorkMatrix").
+    *   **Navigation Links**:
+        *   "Features", "About", "Demo": These links are designed for smooth scrolling to respective sections if the user is on the `/home` page. If on other pages, they link directly to these sections on the `/home` page.
+        *   "Dashboard": Links to the main application dashboard.
+        *   "Login": Directs users to the employee login page (`/login/employee`).
+        *   "Sign Up": Directs users to the employee registration page (`/register/employee`).
+    *   Includes a `<ThemeToggle />` component for switching between light and dark modes.
+    *   Features a mobile-friendly navigation menu (hamburger icon) for smaller screens.
+    *   Renders the `children` prop, which represents the content of the specific marketing page being viewed.
+
+This layout provides a consistent structure and navigation for all marketing-related pages, ensuring a cohesive user experience across the public-facing parts of the application.
