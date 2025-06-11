@@ -1,15 +1,20 @@
 import asyncio
 import logging
 import os
+import sys
 from datetime import datetime
 import pygetwindow as gw
 import keyboard
 import mouse
 from PIL import ImageGrab
-from .utils.sqlite_manager import SQLiteManager
-from .utils.sync_manager import SyncManager
-from .utils.event_manager import EventManager
-from .utils.resource_manager import ResourceManager
+
+# Add the src directory to Python path for imports
+sys.path.insert(0, os.path.join(os.path.dirname(__file__)))
+
+from utils.sqlite_manager import SQLiteManager
+from utils.sync_manager import SyncManager
+from utils.event_manager import EventManager
+from utils.resource_manager import ResourceManager
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)

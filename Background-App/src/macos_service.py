@@ -8,12 +8,15 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional, Dict, Any
 
-from .collectors.screenshot_collector import ScreenshotCollector
-from .collectors.recording_collector import RecordingCollector
-from .collectors.app_usage_collector import AppUsageCollector
-from .services.websocket_server import WebSocketServer
-from .services.supabase_sync import SupabaseSync
-from .utils.config import (
+# Add the src directory to Python path for imports
+sys.path.insert(0, os.path.join(os.path.dirname(__file__)))
+
+from collectors.screenshot_collector import ScreenshotCollector
+from collectors.recording_collector import RecordingCollector
+from collectors.app_usage_collector import AppUsageCollector
+from services.websocket_server import WebSocketServer
+from services.supabase_sync import SupabaseSync
+from utils.config import (
     SUPABASE_URL,
     SUPABASE_KEY,
     WEBSOCKET_HOST,
@@ -24,14 +27,27 @@ from .utils.config import (
 )
 
 # Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler('logs/macos_service.log'),
-        logging.StreamHandler()
-    ]
-)
+def setup_macos_logging():
+    # Get the directory where the executable is located
+    if getattr(sys, 'frozen', False):
+        base_dir = os.path.dirname(sys.executable)
+    else:
+        base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    
+    log_dir = os.path.join(base_dir, 'logs')
+    os.makedirs(log_dir, exist_ok=True)
+    log_file = os.path.join(log_dir, 'macos_service.log')
+    
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        handlers=[
+            logging.FileHandler(log_file),
+            logging.StreamHandler()
+        ]
+    )
+
+setup_macos_logging()
 logger = logging.getLogger(__name__)
 
 class WorkMatrixService:

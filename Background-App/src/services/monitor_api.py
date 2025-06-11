@@ -1,18 +1,32 @@
 import os
+import sys
 import json
 import logging
 from datetime import datetime, timedelta
 import time
 from pathlib import Path
 
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler('api_monitor.log'),
-        logging.StreamHandler()
-    ]
-)
+def setup_api_logging():
+    # Get the directory where the executable is located
+    if getattr(sys, 'frozen', False):
+        base_dir = os.path.dirname(sys.executable)
+    else:
+        base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    
+    log_dir = os.path.join(base_dir, 'logs')
+    os.makedirs(log_dir, exist_ok=True)
+    log_file = os.path.join(log_dir, 'api_monitor.log')
+    
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(levelname)s - %(message)s',
+        handlers=[
+            logging.FileHandler(log_file),
+            logging.StreamHandler()
+        ]
+    )
+
+setup_api_logging()
 logger = logging.getLogger(__name__)
 
 class APIMonitor:

@@ -1,4 +1,5 @@
 import os
+import sys
 import logging
 from supabase import create_client, Client
 from dotenv import load_dotenv
@@ -7,15 +8,29 @@ from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Any
 from loguru import logger
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler('data/logs/workmatrix.log'),
-        logging.StreamHandler()
-    ]
-)
+# Configure logging with proper directory creation
+def setup_logging():
+    # Get the directory where the executable is located
+    if getattr(sys, 'frozen', False):
+        # If running as executable
+        base_dir = os.path.dirname(sys.executable)
+    else:
+        # If running as script
+        base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    
+    log_dir = os.path.join(base_dir, 'logs')
+    os.makedirs(log_dir, exist_ok=True)
+    log_file = os.path.join(log_dir, 'workmatrix.log')
+    
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        handlers=[
+            logging.FileHandler(log_file),
+            logging.StreamHandler()        ]
+    )
+
+setup_logging()
 logger = logging.getLogger(__name__)
 
 class DatabaseHandler:

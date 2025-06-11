@@ -1,22 +1,41 @@
 import asyncio
 import json
 import logging
+import os
+import sys
 from datetime import datetime
 from typing import Dict, Set
 import websockets
 from websockets.server import WebSocketServerProtocol
-from ..collectors.activity_collector import ActivityCollector
-from ..collectors.screenshot_collector import ScreenshotCollector
+
+# Add the src directory to Python path for imports
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+
+from collectors.activity_collector import ActivityCollector
+from collectors.screenshot_collector import ScreenshotCollector
 
 # Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler('logs/websocket.log'),
-        logging.StreamHandler()
-    ]
-)
+def setup_websocket_logging():
+    # Get the directory where the executable is located
+    if getattr(sys, 'frozen', False):
+        base_dir = os.path.dirname(sys.executable)
+    else:
+        base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    
+    log_dir = os.path.join(base_dir, 'logs')
+    os.makedirs(log_dir, exist_ok=True)
+    log_file = os.path.join(log_dir, 'websocket.log')
+    
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        handlers=[
+            logging.FileHandler(log_file),
+            logging.StreamHandler()
+        ]
+    )
+
+setup_websocket_logging()
 logger = logging.getLogger(__name__)
 
 class WebSocketServer:

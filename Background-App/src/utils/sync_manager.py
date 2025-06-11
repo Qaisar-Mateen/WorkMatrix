@@ -1,11 +1,17 @@
 import asyncio
 import logging
+import os
+import sys
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 import aiohttp
-from .sqlite_manager import SQLiteManager
 import backoff
 import json
+
+# Add the src directory to Python path for imports
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+
+from utils.sqlite_manager import SQLiteManager
 
 logger = logging.getLogger(__name__)
 

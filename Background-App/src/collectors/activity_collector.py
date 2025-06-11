@@ -5,7 +5,11 @@ import psutil
 import sys
 from datetime import datetime, timedelta
 from typing import Dict, Optional, List
-from ..utils.database import LocalDatabase
+
+# Add the src directory to Python path for imports
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+
+from utils.database import LocalDatabase
 
 # Only import these on Windows
 if sys.platform == "win32":
@@ -16,14 +20,27 @@ else:
     win32process = None
 
 # Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler('logs/activity.log'),
-        logging.StreamHandler()
-    ]
-)
+def setup_activity_logging():
+    # Get the directory where the executable is located  
+    if getattr(sys, 'frozen', False):
+        base_dir = os.path.dirname(sys.executable)
+    else:
+        base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    
+    log_dir = os.path.join(base_dir, 'logs')
+    os.makedirs(log_dir, exist_ok=True)
+    log_file = os.path.join(log_dir, 'activity.log')
+    
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        handlers=[
+            logging.FileHandler(log_file),
+            logging.StreamHandler()
+        ]
+    )
+
+setup_activity_logging()
 logger = logging.getLogger(__name__)
 
 class ActivityCollector:

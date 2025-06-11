@@ -178,15 +178,11 @@ class WebSocketManager {
           this.retryInterval = INITIAL_RETRY_INTERVAL;
           this.lastPong = Date.now();
           this.notifyStatusChange('connected');
-          this.setupPing();
-
-          // Send auth message
+          this.setupPing();          // Send auth message
           this.ws.send(JSON.stringify({
             type: 'auth',
-            data: { 
-              userId: this.userId,
-              timestamp: new Date().toISOString()
-            }
+            user_id: this.userId,
+            timestamp: new Date().toISOString()
           }));
 
           this.connectionPromise = null;

@@ -2,7 +2,13 @@ import PyInstaller.__main__
 import os
 import shutil
 import sys
+import warnings
 from pathlib import Path
+
+# Suppress pkg_resources deprecation warnings
+warnings.filterwarnings("ignore", category=UserWarning, module="pkg_resources")
+warnings.filterwarnings("ignore", category=UserWarning, message=".*pkg_resources.*")
+os.environ['PYTHONWARNINGS'] = 'ignore::UserWarning:pkg_resources'
 
 def create_env_file(output_dir: str):
     """Create a template .env file in the output directory."""
@@ -50,13 +56,19 @@ def build_exe():
         ('src/services', 'services'),
         ('src/collectors', 'collectors'),
         ('src/config', 'config')
-    ]
-
-    # Hidden imports required for the application
+    ]    # Hidden imports required for the application
     hidden_imports = [
         'PIL._tkinter',
         'win32gui',
         'win32con',
+        'win32process',
+        'win32api',
+        'win32security',
+        'win32event',
+        'win32file',
+        'win32serviceutil',
+        'win32service',
+        'pywintypes',
         'keyboard',
         'mouse',
         'websockets',
@@ -64,10 +76,31 @@ def build_exe():
         'aiohttp',
         'sqlite3',
         'psutil',
-        'dotenv'
-    ]
-
-    # PyInstaller options
+        'dotenv',
+        'supabase',
+        'supabase.client',
+        'supabase.lib.client_options',
+        'postgrest',
+        'postgrest.client',
+        'loguru',
+        'backoff',        'mss',
+        'mss.tools',
+        'PIL',
+        'PIL.Image',
+        'PIL.ImageEnhance',
+        'PIL.ImageFilter',
+        'PIL.ImageDraw',
+        'PIL.ImageFont',
+        'PIL.ImageOps',
+        'pygetwindow',
+        'json',
+        'pathlib',
+        'typing',
+        'dataclasses',
+        'asyncpg',
+        'aiosqlite',
+        'aiofiles'
+    ]# PyInstaller options
     options = [
         'src/main.py',  # Main script
         '--name=workmatrix-background',  # Output name
@@ -75,8 +108,6 @@ def build_exe():
         '--onefile',  # Single file
         f'--distpath={output_dir}',  # Output directory
         '--clean',  # Clean cache
-        '--win-private-assemblies',  # Include private assemblies
-        '--win-no-prefer-redirects',  # Don't prefer redirects
     ]
 
     # Add hidden imports

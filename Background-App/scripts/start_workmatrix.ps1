@@ -8,7 +8,7 @@ function Test-ProcessRunning {
 
 # Function to start the background service
 function Start-BackgroundService {
-    $backgroundExe = Join-Path $PSScriptRoot "workmatrix-background.exe"
+    $backgroundExe = Join-Path (Join-Path (Join-Path $PSScriptRoot "..") "..") "main application\workmatrix-background.exe"
     if (Test-Path $backgroundExe) {
         Write-Host "Starting WorkMatrix background service..."
         Start-Process -FilePath $backgroundExe -WindowStyle Hidden
@@ -20,11 +20,11 @@ function Start-BackgroundService {
 
 # Function to start the frontend
 function Start-Frontend {
-    $frontendPath = Join-Path $PSScriptRoot ".." "Front-End"
+    $frontendPath = Join-Path (Join-Path $PSScriptRoot "..") "..\Front-End"
     if (Test-Path $frontendPath) {
         Write-Host "Starting WorkMatrix frontend..."
         Set-Location $frontendPath
-        Start-Process "npm" -ArgumentList "start" -WindowStyle Normal
+        Start-Process "npm" -ArgumentList "run", "dev" -WindowStyle Normal
     } else {
         Write-Host "Error: Frontend directory not found at: $frontendPath"
         exit 1
@@ -45,12 +45,11 @@ try {
         if (-not (Test-Path $path)) {
             New-Item -ItemType Directory -Path $path -Force | Out-Null
         }
-    }
-
-    # Check if .env file exists
-    $envFile = Join-Path $PSScriptRoot ".env"
+    }    # Check if .env file exists in main application directory
+    $envFile = Join-Path (Join-Path (Join-Path $PSScriptRoot "..") "..") "main application\.env"
     if (-not (Test-Path $envFile)) {
-        Write-Host "Warning: .env file not found. Please configure it before running the application."
+        Write-Host "Warning: .env file not found at: $envFile"
+        Write-Host "Please configure it before running the application."
         exit 1
     }
 

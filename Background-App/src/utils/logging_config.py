@@ -1,10 +1,23 @@
 import logging
 import logging.handlers
 import os
+import sys
 from datetime import datetime
 
-def setup_logging(base_dir: str, log_level: int = logging.INFO):
+def get_base_directory():
+    """Get the base directory where the executable or script is located."""
+    if getattr(sys, 'frozen', False):
+        # If running as executable
+        return os.path.dirname(sys.executable)
+    else:
+        # If running as script, go up to the project root
+        return os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+def setup_logging(base_dir: str = None, log_level: int = logging.INFO):
     """Configure logging with both file and console handlers."""
+    if base_dir is None:
+        base_dir = get_base_directory()
+
     # Create logs directory
     logs_dir = os.path.join(base_dir, 'logs')
     os.makedirs(logs_dir, exist_ok=True)
@@ -72,4 +85,4 @@ def setup_logging(base_dir: str, log_level: int = logging.INFO):
     perf_logger.setLevel(logging.INFO)
     perf_logger.propagate = False  # Don't propagate to root logger
 
-    return root_logger, perf_logger 
+    return root_logger, perf_logger

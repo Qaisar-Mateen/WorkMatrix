@@ -1,278 +1,248 @@
 import os
+import sys
 import time
 import logging
-import mss
-import mss.tools
 from datetime import datetime
+from typing import Optional, Tuple
+import mss
+from PIL import Image, ImageEnhance
 from pathlib import Path
-from typing import Optional, Dict, List, Tuple
-from PIL import Image
-import io
-import shutil
-from ..utils.database import LocalDatabase
-from ..config.screenshot_config import ScreenshotSettings
-from ..config.directory_config import get_user_data_dir, get_user_log_dir
-from ..utils.event_manager import EventManager
+
+# Add the src directory to Python path for imports
+if getattr(sys, 'frozen', False):
+    # If running as executable
+    base_dir = os.path.dirname(sys.executable)
+    src_dir = os.path.join(base_dir, 'src')
+else:
+    # If running as script
+    src_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+if src_dir not in sys.path:
+    sys.path.insert(0, src_dir)
+
+from utils.database import LocalDatabase
+from config.screenshot_config import ScreenshotConfig
+
+# Configure logging
+def setup_screenshot_logging():
+    # Get the directory where the executable is located  
+    if getattr(sys, 'frozen', False):
+        base_dir = os.path.dirname(sys.executable)
+    else:
+        base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    
+    log_dir = os.path.join(base_dir, 'logs')
+    os.makedirs(log_dir, exist_ok=True)
+    log_file = os.path.join(log_dir, 'screenshot.log')
+    
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        handlers=[
+            logging.FileHandler(log_file),
+            logging.StreamHandler()
+        ]
+    )
+
+setup_screenshot_logging()
+logger = logging.getLogger(__name__)
 
 class ScreenshotCollector:
-    def __init__(self, user_id: str, settings: Optional[ScreenshotSettings] = None):
+    def __init__(self, user_id: str, config: Optional[ScreenshotConfig] = None):
+        """Initialize the screenshot collector."""
         self.user_id = user_id
-        self.settings = settings or ScreenshotSettings.load(user_id)
+        self.config = config or ScreenshotConfig()
         self.db = LocalDatabase()
-        self.event_manager = EventManager()
+        self.is_running = False
+        self.sct = mss.mss()
         
-        # Set up directories
-        self.dirs = get_user_data_dir(user_id)
-        self.logs = get_user_log_dir(user_id)
-        self.screenshot_dir = self.dirs["screenshots"]
-        self.screenshot_dir.mkdir(parents=True, exist_ok=True)
+        # Create screenshots directory
+        self.screenshots_dir = self._get_screenshots_directory()
+        os.makedirs(self.screenshots_dir, exist_ok=True)
         
-        # Set up logging
-        logging.basicConfig(
-            filename=self.logs["screenshots"],
-            level=logging.INFO,
-            format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-        )
-        self.logger = logging.getLogger(__name__)
-        
-        self.last_screenshot_time = 0
-        self.failed_attempts = 0
-        self.max_failed_attempts = 3
-        self.logger.info(f"Screenshot collector initialized for user {user_id}")
+        logger.info(f"ScreenshotCollector initialized for user: {user_id}")
 
-    def _check_storage_space(self) -> Tuple[bool, str]:
-        """Check if there's enough storage space for new screenshots."""
+    def _get_screenshots_directory(self) -> str:
+        """Get the screenshots directory path."""
+        if getattr(sys, 'frozen', False):
+            # If running as executable
+            base_dir = os.path.dirname(sys.executable)
+        else:
+            # If running as script
+            base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        
+        return os.path.join(base_dir, 'data', 'screenshots')
+
+    def start_collection(self):
+        """Start the screenshot collection process."""
+        self.is_running = True
+        logger.info("Screenshot collection started")
+        
+        while self.is_running:
+            try:
+                self.capture_screenshot()
+                time.sleep(self.config.interval)
+            except Exception as e:
+                logger.error(f"Error in screenshot collection loop: {str(e)}")
+                time.sleep(5)  # Wait a bit before retrying
+
+    def stop_collection(self):
+        """Stop the screenshot collection process."""
+        self.is_running = False
+        logger.info("Screenshot collection stopped")
+
+    def capture_screenshot(self) -> Optional[str]:
+        """Capture a screenshot and save it."""
         try:
-            total_size = sum(f.stat().st_size for f in self.screenshot_dir.rglob('*') if f.is_file())
-            max_size = self.settings.get_max_storage_bytes()
+            # Take screenshot
+            screenshot = self.sct.grab(self.sct.monitors[0])  # Primary monitor
             
-            if total_size >= max_size:
-                return False, f"Storage limit reached ({total_size / (1024**3):.2f}GB used)"
-            return True, ""
+            # Convert to PIL Image
+            img = Image.frombytes("RGB", screenshot.size, screenshot.rgb)
+            
+            # Apply compression if needed
+            if self.config.compression_quality < 100:
+                img = self._apply_compression(img)
+            
+            # Generate filename
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            filename = f"screenshot_{timestamp}_{self.user_id}.png"
+            filepath = os.path.join(self.screenshots_dir, filename)
+            
+            # Save image
+            img.save(filepath, "PNG", optimize=True)
+            
+            # Store in database
+            screenshot_id = self.db.insert_screenshot(self.user_id, filepath)
+            
+            logger.info(f"Screenshot captured: {filename}")
+            return filepath
+            
         except Exception as e:
-            self.logger.error(f"Error checking storage space: {str(e)}")
-            return False, str(e)
+            logger.error(f"Error capturing screenshot: {str(e)}")
+            return None
 
-    def _should_capture(self, app_name: str, window_title: str) -> Tuple[bool, str]:
-        """Determine if a screenshot should be captured based on settings."""
-        if not self.settings.privacy_mode:
-            return True, ""
-            
-        if self.settings.is_app_excluded(app_name):
-            return False, f"App excluded: {app_name}"
-            
-        if self.settings.is_window_excluded(window_title):
-            return False, f"Window excluded: {window_title}"
-            
-        return True, ""
-
-    def _compress_image(self, image_data: bytes, quality: int = None) -> bytes:
-        """Compress image data if compression is enabled."""
-        if not self.settings.compression:
-            return image_data
-            
+    def _apply_compression(self, img: Image.Image) -> Image.Image:
+        """Apply compression to the image."""
         try:
-            quality = quality or self.settings.quality
-            img = Image.open(io.BytesIO(image_data))
+            # Resize if needed
+            if self.config.max_width or self.config.max_height:
+                img = self._resize_image(img)
             
-            # Convert to RGB if necessary
-            if img.mode in ('RGBA', 'P'):
-                img = img.convert('RGB')
+            # Adjust quality by reducing colors or enhancing
+            if self.config.compression_quality < 80:
+                # Convert to RGB if not already
+                if img.mode != 'RGB':
+                    img = img.convert('RGB')
                 
-            output = io.BytesIO()
-            img.save(output, format='JPEG', quality=quality, optimize=True)
-            return output.getvalue()
-        except Exception as e:
-            self.logger.error(f"Error compressing image: {str(e)}")
-            return image_data
-
-    def _get_monitor_info(self) -> List[Dict]:
-        """Get information about available monitors."""
-        try:
-            with mss.mss() as sct:
-                monitors = []
-                for i, monitor in enumerate(sct.monitors[1:], 1):  # Skip the "all monitors" monitor
-                    monitors.append({
-                        "id": i,
-                        "left": monitor["left"],
-                        "top": monitor["top"],
-                        "width": monitor["width"],
-                        "height": monitor["height"]
-                    })
-                return monitors
-        except Exception as e:
-            self.logger.error(f"Error getting monitor info: {str(e)}")
-            return []
-
-    def capture_screenshot(self, app_name: str = "", window_title: str = "") -> Optional[Dict]:
-        """Capture a screenshot if conditions are met."""
-        current_time = time.time()
-        
-        # Check interval
-        if current_time - self.last_screenshot_time < self.settings.interval:
-            return None
+                # Reduce quality by adjusting brightness/contrast slightly
+                enhancer = ImageEnhance.Contrast(img)
+                img = enhancer.enhance(0.95)
             
-        # Check storage space
-        has_space, space_msg = self._check_storage_space()
-        if not has_space:
-            self.logger.warning(f"Skipping screenshot: {space_msg}")
-            return None
+            return img
             
-        # Check privacy settings
-        should_capture, reason = self._should_capture(app_name, window_title)
-        if not should_capture:
-            self.logger.info(f"Skipping screenshot: {reason}")
-            return None
+        except Exception as e:
+            logger.error(f"Error applying compression: {str(e)}")
+            return img
 
+    def _resize_image(self, img: Image.Image) -> Image.Image:
+        """Resize image based on configuration."""
         try:
-            # Create timestamp for filename
-            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-            filename = f"screenshot_{timestamp}.jpg"
-            filepath = self.screenshot_dir / filename
+            width, height = img.size
+            
+            # Calculate new dimensions
+            if self.config.max_width and width > self.config.max_width:
+                ratio = self.config.max_width / width
+                new_width = self.config.max_width
+                new_height = int(height * ratio)
+            else:
+                new_width, new_height = width, height
+            
+            if self.config.max_height and new_height > self.config.max_height:
+                ratio = self.config.max_height / new_height
+                new_width = int(new_width * ratio)
+                new_height = self.config.max_height
+            
+            if new_width != width or new_height != height:
+                img = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
+                logger.debug(f"Image resized from {width}x{height} to {new_width}x{new_height}")
+            
+            return img
+            
+        except Exception as e:
+            logger.error(f"Error resizing image: {str(e)}")
+            return img
 
-            # Capture screenshot
-            with mss.mss() as sct:
-                screenshots = []
-                if self.settings.capture_all_monitors:
-                    # Capture all monitors
-                    for i, monitor in enumerate(sct.monitors[1:], 1):
-                        screenshot = sct.grab(monitor)
-                        img_data = mss.tools.to_png(screenshot.rgb, screenshot.size)
-                        if self.settings.compression:
-                            img_data = self._compress_image(img_data)
-                        screenshots.append({
-                            "monitor": i,
-                            "data": img_data,
-                            "size": screenshot.size
-                        })
-                else:
-                    # Capture primary monitor
-                    monitor = sct.monitors[1] if len(sct.monitors) > 1 else sct.monitors[0]
-                screenshot = sct.grab(monitor)
-                    img_data = mss.tools.to_png(screenshot.rgb, screenshot.size)
-                    if self.settings.compression:
-                        img_data = self._compress_image(img_data)
-                    screenshots.append({
-                        "monitor": 1,
-                        "data": img_data,
-                        "size": screenshot.size
-                    })
+    def cleanup_old_screenshots(self, days: int = 7):
+        """Clean up old screenshot files."""
+        try:
+            deleted_count = self.db.delete_old_media("screenshots", self.screenshots_dir, days)
+            logger.info(f"Cleaned up {deleted_count} old screenshots")
+            return deleted_count
+        except Exception as e:
+            logger.error(f"Error cleaning up old screenshots: {str(e)}")
+            return 0
 
-                # Save screenshots
-                for i, screenshot in enumerate(screenshots):
-                    if len(screenshots) > 1:
-                        monitor_filename = f"screenshot_{timestamp}_monitor{i+1}.jpg"
-                    else:
-                        monitor_filename = filename
-                        
-                    monitor_filepath = self.screenshot_dir / monitor_filename
-                    with open(monitor_filepath, 'wb') as f:
-                        f.write(screenshot["data"])
-
-            # Create screenshot data
-            screenshot_data = {
-                "user_id": self.user_id,
-                        "filename": monitor_filename,
-                        "filepath": str(monitor_filepath),
-                "timestamp": datetime.now().isoformat(),
-                        "monitor": screenshot["monitor"],
-                        "size": screenshot["size"],
-                        "app_name": app_name,
-                        "window_title": window_title,
-                        "compressed": self.settings.compression,
-                        "quality": self.settings.quality
+    def get_screenshot_stats(self) -> dict:
+        """Get statistics about screenshots."""
+        try:
+            stats = {
+                'total_files': 0,
+                'total_size_mb': 0,
+                'oldest_file': None,
+                'newest_file': None
             }
-
-            # Store in local database
-                    self.db.insert_screenshot(self.user_id, str(monitor_filepath))
+            
+            if os.path.exists(self.screenshots_dir):
+                files = list(Path(self.screenshots_dir).glob("*.png"))
+                stats['total_files'] = len(files)
+                
+                if files:
+                    total_size = sum(f.stat().st_size for f in files)
+                    stats['total_size_mb'] = round(total_size / 1024 / 1024, 2)
                     
-                    # Emit event
-                    self.event_manager.emit("screenshot_captured", screenshot_data)
+                    # Get oldest and newest files
+                    files_with_time = [(f, f.stat().st_mtime) for f in files]
+                    files_with_time.sort(key=lambda x: x[1])
+                    
+                    stats['oldest_file'] = files_with_time[0][0].name
+                    stats['newest_file'] = files_with_time[-1][0].name
             
-            # Update last screenshot time and reset failed attempts
-            self.last_screenshot_time = current_time
-            self.failed_attempts = 0
-
-            self.logger.info(f"Screenshot captured: {filename}")
-            return screenshot_data
-
+            return stats
+            
         except Exception as e:
-            self.failed_attempts += 1
-            self.logger.error(f"Error capturing screenshot: {str(e)}")
-            
-            if self.failed_attempts >= self.max_failed_attempts:
-                self.logger.error("Maximum failed attempts reached. Stopping screenshot capture.")
-                self.event_manager.emit("screenshot_error", {
-                    "user_id": self.user_id,
-                    "error": str(e),
-                    "failed_attempts": self.failed_attempts
-                })
-            
-            return None
+            logger.error(f"Error getting screenshot stats: {str(e)}")
+            return {}
 
-    def get_recent_screenshots(self, limit: int = 10) -> List[Dict]:
-        """Get list of recent screenshots with metadata."""
+    def get_recent_screenshots(self, limit: int = 10) -> list:
+        """Get a list of recent screenshots."""
         try:
-            screenshots = []
-            for file in sorted(self.screenshot_dir.glob("*.jpg"), reverse=True)[:limit]:
-                try:
-                    with Image.open(file) as img:
-                screenshots.append({
-                    "filename": file.name,
-                            "path": str(file),
-                            "size": file.stat().st_size,
-                            "dimensions": img.size,
-                            "created": datetime.fromtimestamp(file.stat().st_ctime).isoformat()
+            if not os.path.exists(self.screenshots_dir):
+                return []
+            
+            files = list(Path(self.screenshots_dir).glob("*.png"))
+            files_with_time = [(f, f.stat().st_mtime) for f in files]
+            files_with_time.sort(key=lambda x: x[1], reverse=True)
+            
+            recent_files = []
+            for file_path, mtime in files_with_time[:limit]:
+                recent_files.append({
+                    'filename': file_path.name,
+                    'filepath': str(file_path),
+                    'size_mb': round(file_path.stat().st_size / 1024 / 1024, 2),
+                    'created_at': datetime.fromtimestamp(mtime).isoformat()
                 })
-                except Exception as e:
-                    self.logger.error(f"Error reading screenshot {file}: {str(e)}")
-            return screenshots
+            
+            return recent_files
+            
         except Exception as e:
-            self.logger.error(f"Error getting recent screenshots: {str(e)}")
+            logger.error(f"Error getting recent screenshots: {str(e)}")
             return []
 
-    def cleanup_old_screenshots(self) -> None:
-        """Clean up screenshots based on retention policy."""
+    def __del__(self):
+        """Cleanup when object is destroyed."""
         try:
-            self.db.delete_old_media("screenshots", str(self.screenshot_dir), 
-                                   self.settings.retention_days)
-            self.logger.info(f"Cleaned up screenshots older than {self.settings.retention_days} days")
-        except Exception as e:
-            self.logger.error(f"Error cleaning up screenshots: {str(e)}")
-            raise
-
-    def get_storage_usage(self) -> Dict:
-        """Get current storage usage statistics."""
-        try:
-            total_size = sum(f.stat().st_size for f in self.screenshot_dir.rglob('*') if f.is_file())
-            max_size = self.settings.get_max_storage_bytes()
-            file_count = sum(1 for f in self.screenshot_dir.rglob('*') if f.is_file())
-            
-            return {
-                "total_size_bytes": total_size,
-                "total_size_gb": total_size / (1024**3),
-                "max_size_bytes": max_size,
-                "max_size_gb": max_size / (1024**3),
-                "file_count": file_count,
-                "usage_percent": (total_size / max_size) * 100 if max_size > 0 else 0
-            }
-        except Exception as e:
-            self.logger.error(f"Error getting storage usage: {str(e)}")
-            return {
-                "total_size_bytes": 0,
-                "total_size_gb": 0,
-                "max_size_bytes": 0,
-                "max_size_gb": 0,
-                "file_count": 0,
-                "usage_percent": 0
-            }
-
-    def close(self) -> None:
-        """Clean up resources."""
-        try:
-            self.db.close()
-            self.event_manager.close()
-            self.logger.info("Screenshot collector closed")
-        except Exception as e:
-            self.logger.error(f"Error closing screenshot collector: {str(e)}")
-            raise 
+            if hasattr(self, 'sct'):
+                self.sct.close()
+        except:
+            pass
