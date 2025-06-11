@@ -1,6 +1,6 @@
 import sqlite3
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 import logging
 
 logger = logging.getLogger(__name__)
@@ -60,6 +60,17 @@ class SQLiteManager:
                         created_at TEXT DEFAULT CURRENT_TIMESTAMP
                     );
 
+                    -- Local Recordings
+                    CREATE TABLE IF NOT EXISTS local_recordings (
+                        id TEXT PRIMARY KEY,
+                        user_id TEXT NOT NULL,
+                        time_entry_id TEXT,
+                        local_file_path TEXT NOT NULL,
+                        storage_path TEXT,
+                        is_synced INTEGER DEFAULT 0,
+                        created_at TEXT DEFAULT CURRENT_TIMESTAMP
+                    );
+
                     -- Local Settings
                     CREATE TABLE IF NOT EXISTS local_settings (
                         key TEXT PRIMARY KEY,
@@ -74,6 +85,8 @@ class SQLiteManager:
                     CREATE INDEX IF NOT EXISTS idx_activity_logs_sync ON local_activity_logs(is_synced);
                     CREATE INDEX IF NOT EXISTS idx_screenshots_user_id ON local_screenshots(user_id);
                     CREATE INDEX IF NOT EXISTS idx_screenshots_sync ON local_screenshots(is_synced);
+                    CREATE INDEX IF NOT EXISTS idx_recordings_user_id ON local_recordings(user_id);
+                    CREATE INDEX IF NOT EXISTS idx_recordings_sync ON local_recordings(is_synced);
                 """)
                 
                 logger.info("Database initialized successfully")
@@ -210,4 +223,57 @@ class SQLiteManager:
                 """, (key, value))
         except Exception as e:
             logger.error(f"Error setting setting: {e}")
-            raise 
+            raise
+
+    def cleanup_old_media(self, media_type: str, directory: str, days: int = 30):
+        """Clean up old media files and their database records."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cutoff_date = datetime.now() - timedelta(days=days)
+                
+                # Get old media records
+                if media_type == "screenshots":
+                    cursor.execute("""
+                        SELECT id, local_file_path FROM local_screenshots 
+                        WHERE created_at < ?
+                    """, (cutoff_date.isoformat(),))
+                elif media_type == "recordings":
+                    cursor.execute("""
+                        SELECT id, local_file_path FROM local_recordings 
+                        WHERE created_at < ?
+                    """, (cutoff_date.isoformat(),))
+                else:
+                    raise ValueError(f"Unsupported media type: {media_type}")
+                
+                old_records = cursor.fetchall()
+                
+                # Delete files and records
+                for record_id, file_path in old_records:
+                    try:
+                        # Delete file if it exists
+                        if os.path.exists(file_path):
+                            os.remove(file_path)
+                        
+                        # Delete database record
+                        if media_type == "screenshots":
+                            cursor.execute("DELETE FROM local_screenshots WHERE id = ?", (record_id,))
+                        else:
+                            cursor.execute("DELETE FROM local_recordings WHERE id = ?", (record_id,))
+                            
+                    except Exception as e:
+                        logger.error(f"Error cleaning up {media_type} {record_id}: {e}")
+                        continue
+                
+                conn.commit()
+                logger.info(f"Cleaned up {len(old_records)} old {media_type}")
+                return len(old_records)
+                
+        except Exception as e:
+            logger.error(f"Error cleaning up old {media_type}: {e}")
+            raise
+
+    def close(self):
+        """Close the database connection if open (for compatibility with other DB classes)."""
+        # This class uses context managers for connections, so nothing to close, but provide for API compatibility.
+        pass 

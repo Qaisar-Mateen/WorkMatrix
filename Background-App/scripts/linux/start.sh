@@ -1,75 +1,61 @@
-#!/bin/bash
+#!/usr/bin/env bash
+set -euo pipefail
 
-# Colors for output
+# ─── COLORS ──────────────────────────────────────────────────────────────────
 GREEN='\033[0;32m'
 RED='\033[0;31m'
 NC='\033[0m' # No Color
 
+# ─── PATHS ───────────────────────────────────────────────────────────────────
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-APP_ROOT="$SCRIPT_DIR/../.."
+APP_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+VENV_DIR="$APP_ROOT/venv"
 
 cd "$APP_ROOT"
 
-# Function to check if Python is installed
-check_python() {
-    if ! command -v python3 &> /dev/null; then
-        echo -e "${RED}Python 3 is not installed. Please install Python 3 first.${NC}"
-        exit 1
-    fi
+# ─── CHECKS ──────────────────────────────────────────────────────────────────
+command -v python3 >/dev/null 2>&1 || {
+  echo -e "${RED}Python 3 is not installed. Please install Python 3 first.${NC}"
+  exit 1
 }
 
-# Function to check if virtual environment exists
-check_venv() {
-    if [ ! -d "venv" ]; then
-        echo -e "${GREEN}Creating virtual environment...${NC}"
-        python3 -m venv venv
-    fi
-}
+# ─── SETUP VENV ───────────────────────────────────────────────────────────────
+if [ ! -d "$VENV_DIR" ]; then
+  echo -e "${GREEN}Creating virtual environment in ${VENV_DIR}...${NC}"
+  python3 -m venv "$VENV_DIR"
+fi
 
-# Function to activate virtual environment and install dependencies
-setup_venv() {
-    echo -e "${GREEN}Activating virtual environment...${NC}"
-    source venv/bin/activate
-    
-    echo -e "${GREEN}Installing/Updating dependencies...${NC}"
-    pip install --upgrade pip
-    pip install -r requirements.txt
-}
+echo -e "${GREEN}Activating virtual environment...${NC}"
+# shellcheck disable=SC1090
+source "$VENV_DIR/bin/activate"
 
-# Function to check if .env file exists
-check_env() {
-    if [ ! -f ".env" ]; then
-        echo -e "${RED}.env file not found in $APP_ROOT. Please create one with your Supabase credentials.${NC}"
-        exit 1
-    fi
-}
+echo -e "${GREEN}Upgrading pip & installing dependencies...${NC}"
+pip install --upgrade pip setuptools wheel
+pip install -r requirements.txt
 
-# Function to start the application
-start_app() {
-    echo -e "${GREEN}Starting WorkMatrix Background App...${NC}"
-    source venv/bin/activate
-    set -a
-    source .env
-    set +a
-    python3 src/main.py
-}
+# ─── PREPARE LOGS ─────────────────────────────────────────────────────────────
+LOG_DIR="$APP_ROOT/data/logs"
+if [ ! -d "$LOG_DIR" ]; then
+  echo -e "${GREEN}Creating log directory at ${LOG_DIR}...${NC}"
+  mkdir -p "$LOG_DIR"
+fi
 
-# Main execution
-echo -e "${GREEN}Initializing WorkMatrix Background App...${NC}"
-
-# Check requirements
-check_python
-check_venv
-check_env
-
-# Setup environment
-setup_venv
-
-# Ensure log directory exists
-mkdir -p data/logs
-
-# Install the package in development mode from the project root
+# ─── INSTALL PACKAGE ─────────────────────────────────────────────────────────
+echo -e "${GREEN}Installing your package in editable mode...${NC}"
 pip install -e .
 
-# Start the application
-start_app 
+# ─── CHECK .env ──────────────────────────────────────────────────────────────
+if [ ! -f "$APP_ROOT/.env" ]; then
+  echo -e "${RED}ERROR: .env file not found in $APP_ROOT. Please create one with your Supabase credentials.${NC}"
+  exit 1
+fi
+
+# ─── RUN THE APP ─────────────────────────────────────────────────────────────
+echo -e "${GREEN}Sourcing .env and launching WorkMatrix...${NC}"
+set -a
+# shellcheck disable=SC1090
+source "$APP_ROOT/.env"
+set +a
+
+# **IMPORTANT**: run as a package so that your relative imports work
+python3 -m src.main

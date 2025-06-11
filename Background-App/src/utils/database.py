@@ -3,7 +3,7 @@ import logging
 from supabase import create_client, Client
 from dotenv import load_dotenv
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Any
 from loguru import logger
 
@@ -145,6 +145,48 @@ class LocalDatabase:
             return self.cursor.lastrowid
         except Exception as e:
             logger.error(f"Error inserting activity: {str(e)}")
+            raise
+
+    def delete_old_activity_logs(self, days: int = 30):
+        """Delete activity logs older than specified days."""
+        try:
+            cutoff_date = datetime.now() - timedelta(days=days)
+            self.cursor.execute(
+                "DELETE FROM activity_logs WHERE timestamp < ?",
+                (cutoff_date.isoformat(),)
+            )
+            self.conn.commit()
+            deleted_count = self.cursor.rowcount
+            logger.info(f"Deleted {deleted_count} old activity logs")
+            return deleted_count
+        except Exception as e:
+            logger.error(f"Error deleting old activity logs: {str(e)}")
+            raise
+
+    def get_activity_logs_between(self, start_time: datetime, end_time: datetime) -> List[Dict[str, Any]]:
+        """Get activity logs between two timestamps."""
+        try:
+            self.cursor.execute(
+                "SELECT * FROM activity_logs WHERE timestamp BETWEEN ? AND ?",
+                (start_time.isoformat(), end_time.isoformat())
+            )
+            return [dict(zip([col[0] for col in self.cursor.description], row))
+                   for row in self.cursor.fetchall()]
+        except Exception as e:
+            logger.error(f"Error getting activity logs: {str(e)}")
+            raise
+
+    def insert_activity_log(self, user_id: str, activity_type: str, details: Optional[Dict] = None) -> int:
+        """Insert a new activity log."""
+        try:
+            self.cursor.execute(
+                "INSERT INTO activity_logs (user_id, timestamp, activity_type, details) VALUES (?, ?, ?, ?)",
+                (user_id, datetime.now().isoformat(), activity_type, str(details) if details else None)
+            )
+            self.conn.commit()
+            return self.cursor.lastrowid
+        except Exception as e:
+            logger.error(f"Error inserting activity log: {str(e)}")
             raise
 
     def insert_screenshot(self, user_id: str, file_path: str) -> int:
@@ -296,6 +338,52 @@ class LocalDatabase:
             self.conn.commit()
         except Exception as e:
             logger.error(f"Error marking break as synced: {str(e)}")
+            raise
+
+    def delete_old_media(self, media_type: str, directory: str, days: int = 30):
+        """Clean up old media files and their database records."""
+        try:
+            cutoff_date = datetime.now() - timedelta(days=days)
+            
+            # Get old media records
+            if media_type == "screenshots":
+                self.cursor.execute("""
+                    SELECT id, file_path FROM screenshots 
+                    WHERE timestamp < ?
+                """, (cutoff_date.isoformat(),))
+            elif media_type == "recordings":
+                self.cursor.execute("""
+                    SELECT id, file_path FROM recordings 
+                    WHERE timestamp < ?
+                """, (cutoff_date.isoformat(),))
+            else:
+                raise ValueError(f"Unsupported media type: {media_type}")
+            
+            old_records = self.cursor.fetchall()
+            
+            # Delete files and records
+            for record_id, file_path in old_records:
+                try:
+                    # Delete file if it exists
+                    if os.path.exists(file_path):
+                        os.remove(file_path)
+                    
+                    # Delete database record
+                    if media_type == "screenshots":
+                        self.cursor.execute("DELETE FROM screenshots WHERE id = ?", (record_id,))
+                    else:
+                        self.cursor.execute("DELETE FROM recordings WHERE id = ?", (record_id,))
+                        
+                except Exception as e:
+                    logger.error(f"Error cleaning up {media_type} {record_id}: {e}")
+                    continue
+            
+            self.conn.commit()
+            logger.info(f"Cleaned up {len(old_records)} old {media_type}")
+            return len(old_records)
+            
+        except Exception as e:
+            logger.error(f"Error cleaning up old {media_type}: {e}")
             raise
 
     def close(self):

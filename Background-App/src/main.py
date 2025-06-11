@@ -2,67 +2,59 @@ import os
 import sys
 import asyncio
 import logging
-from datetime import datetime
 from dotenv import load_dotenv
-from .services.websocket_server import start_websocket_server
-from .services.monitor_api import APIMonitor
-from .utils.config import (
-    SCREENSHOT_INTERVAL,
-    KEYSTROKE_INTERVAL,
-    SYNC_INTERVAL,
-    IDLE_THRESHOLD
-)
 
-# Load environment variables
+from .services.websocket_server import start_websocket_server
+from .services.monitor_api         import APIMonitor
+from .services.http_server         import start_http_server
+
+# load env vars from .env
 load_dotenv()
 
-# Configure logging
 def setup_logging():
-    logger = logging.getLogger(__name__)
+    logger = logging.getLogger("workmatrix")
     logger.setLevel(logging.INFO)
+    os.makedirs("logs", exist_ok=True)
 
-    # Create handlers
-    console_handler = logging.StreamHandler()
-    file_handler = logging.FileHandler('logs/workmatrix.log')
+    fmt = logging.Formatter("%(asctime)s %(levelname)s %(message)s")
+    ch = logging.StreamHandler()
+    ch.setFormatter(fmt)
+    fh = logging.FileHandler("logs/workmatrix.log")
+    fh.setFormatter(fmt)
 
-    # Create formatters and add it to handlers
-    log_format = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-    console_handler.setFormatter(log_format)
-    file_handler.setFormatter(log_format)
-
-    # Add handlers to the logger
-    logger.addHandler(console_handler)
-    logger.addHandler(file_handler)
-
+    logger.addHandler(ch)
+    logger.addHandler(fh)
     return logger
 
-# Get logger
 logger = setup_logging()
 
 async def main():
-    """
-    Main entry point for the application.
-    """
-    try:
-        # Start WebSocket server
-        websocket_task = asyncio.create_task(start_websocket_server())
-        
-        # Start API monitor
-        api_monitor = APIMonitor()
-        api_task = asyncio.create_task(api_monitor.run())
+    logger.info("Booting WorkMatrix services…")
 
-        # Wait for all tasks
-        await asyncio.gather(websocket_task, api_task)
+    # 1) WebSocket
+    ws_task = asyncio.create_task(start_websocket_server())
 
-    except Exception as e:
-        logger.error(f"Fatal error: {e}")
-        sys.exit(1)
+    # 2) API monitor (might be sync or async)
+    api_mon = APIMonitor()
+    if asyncio.iscoroutinefunction(api_mon.run):
+        api_task = asyncio.create_task(api_mon.run())
+    else:
+        # wrap the sync .run() in a thread so it won't block the loop
+        api_task = asyncio.create_task(asyncio.to_thread(api_mon.run))
+
+    # 3) HTTP server
+    http_task = asyncio.create_task(start_http_server())
+
+    # wait on all three
+    await asyncio.gather(ws_task, api_task, http_task)
+
 
 if __name__ == "__main__":
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        logger.info("Application stopped by user")
-    except Exception as e:
-        logger.error(f"Fatal error: {e}")
-        sys.exit(1) 
+        logger.info("Shutting down on user interrupt")
+        sys.exit(0)
+    except Exception:
+        logger.exception("Fatal error")
+        sys.exit(1)

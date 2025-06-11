@@ -2,11 +2,18 @@ import os
 import time
 import logging
 import psutil
-import win32gui
-import win32process
+import sys
 from datetime import datetime, timedelta
 from typing import Dict, Optional, List
 from ..utils.database import LocalDatabase
+
+# Only import these on Windows
+if sys.platform == "win32":
+    import win32gui
+    import win32process
+else:
+    win32gui = None
+    win32process = None
 
 # Configure logging
 logging.basicConfig(
@@ -33,17 +40,26 @@ class ActivityCollector:
         self.total_active_time = 0
         logger.info(f"Activity collector initialized for user {user_id}")
 
-    def get_active_window_info(self) -> Dict[str, str]:
-        """Get information about the currently active window."""
+    def get_active_window_info(self) -> Dict[str, Optional[object]]:
+        """Get information about the currently active window (Windows only)."""
+        if sys.platform != "win32" or win32gui is None or win32process is None:
+            return {
+                "app_name": None,
+                "window_title": None,
+                "process_id": None,
+                "cpu_usage": 0.0,
+                "memory_usage": 0,
+                "timestamp": datetime.utcnow().isoformat()
+            }
+
         try:
-            window = win32gui.GetForegroundWindow()
-            _, pid = win32process.GetWindowThreadProcessId(window)
+            window_handle = win32gui.GetForegroundWindow()
+            _, pid = win32process.GetWindowThreadProcessId(window_handle)
             process = psutil.Process(pid)
             app_name = process.name()
-            window_title = win32gui.GetWindowText(window)
-            
-            # Get additional process info
-            cpu_percent = process.cpu_percent()
+            window_title = win32gui.GetWindowText(window_handle)
+
+            cpu_percent = process.cpu_percent(interval=None)
             memory_info = process.memory_info()
 
             return {
@@ -54,143 +70,128 @@ class ActivityCollector:
                 "memory_usage": memory_info.rss,
                 "timestamp": datetime.utcnow().isoformat()
             }
+
         except Exception as e:
-            logger.error(f"Error getting active window info: {str(e)}")
+            logger.error(f"Error getting active window info: {e}")
             return {
                 "app_name": "unknown",
                 "window_title": "unknown",
                 "process_id": None,
-                "cpu_usage": 0,
+                "cpu_usage": 0.0,
                 "memory_usage": 0,
                 "timestamp": datetime.utcnow().isoformat()
             }
 
     def check_idle_state(self) -> bool:
-        """Check if the system is in an idle state."""
+        """Check if the system is idle based on time since last activity."""
         current_time = time.time()
         idle_duration = current_time - self.last_activity_time
 
         if idle_duration >= self.idle_threshold and not self.is_idle:
-            # Transition to idle state
             self.is_idle = True
             self.idle_start_time = current_time
             logger.info("System entered idle state")
             return True
-        elif idle_duration < self.idle_threshold and self.is_idle:
-            # Transition from idle to active
+
+        if idle_duration < self.idle_threshold and self.is_idle:
             self.is_idle = False
-            if self.idle_start_time:
+            if self.idle_start_time is not None:
                 self.total_idle_time += current_time - self.idle_start_time
                 self.idle_start_time = None
             logger.info("System returned from idle state")
             return False
-        
+
         return self.is_idle
 
     def collect_activity(self) -> Optional[Dict]:
-        """Collect current activity data."""
+        """Collect and log activity whenever something changes."""
         try:
-            current_time = time.time()
-            window_info = self.get_active_window_info()
+            now = time.time()
+            info = self.get_active_window_info()
             is_idle = self.check_idle_state()
-            
-            # Calculate time deltas
-            time_since_last = current_time - self.last_activity_time
-            if not is_idle:
-                self.total_active_time += time_since_last
+            delta = now - self.last_activity_time
 
-            # Only log if the window or app has changed, or if transitioning idle state
-            if (window_info["window_title"] != self.last_window_title or 
-                window_info["app_name"] != self.last_app_name or
-                is_idle != self.is_idle):
-                
-                activity_data = {
-                    "user_id": self.user_id,
-                    "app_name": window_info["app_name"],
-                    "window_title": window_info["window_title"],
-                    "activity_type": "window_focus" if not is_idle else "idle",
-                    "cpu_usage": window_info["cpu_usage"],
-                    "memory_usage": window_info["memory_usage"],
-                    "is_idle": is_idle,
-                    "idle_duration": time_since_last if is_idle else 0,
+            if not is_idle:
+                self.total_active_time += delta
+
+            # Only log on state or window/app change
+            if (
+                info["window_title"] != self.last_window_title or
+                info["app_name"]     != self.last_app_name or
+                is_idle              != self.is_idle
+            ):
+                record = {
+                    "user_id":         self.user_id,
+                    "app_name":        info["app_name"],
+                    "window_title":    info["window_title"],
+                    "activity_type":   "idle" if is_idle else "window_focus",
+                    "cpu_usage":       info["cpu_usage"],
+                    "memory_usage":    info["memory_usage"],
+                    "is_idle":         is_idle,
+                    "idle_duration":   delta if is_idle else 0,
                     "total_idle_time": self.total_idle_time,
                     "total_active_time": self.total_active_time,
-                    "created_at": datetime.utcnow().isoformat()
+                    "created_at":      datetime.utcnow().isoformat()
                 }
 
-                # Store in local database
-                self.db.insert_activity_log(activity_data)
+                self.db.insert_activity_log(record)
 
-                # Update last known state
-                self.last_window_title = window_info["window_title"]
-                self.last_app_name = window_info["app_name"]
-                self.last_activity_time = current_time
+                # update last-known values
+                self.last_window_title = info["window_title"]
+                self.last_app_name     = info["app_name"]
+                self.last_activity_time = now
 
-                return activity_data
+                return record
 
         except Exception as e:
-            logger.error(f"Error collecting activity: {str(e)}")
-            return None
+            logger.error(f"Error collecting activity: {e}")
+        return None
 
     def get_recent_activity(self, limit: int = 10) -> List[Dict]:
-        """Get recent activity logs."""
         try:
             return self.db.get_recent_activity_logs(limit)
         except Exception as e:
-            logger.error(f"Error getting recent activity: {str(e)}")
+            logger.error(f"Error retrieving recent activity: {e}")
             return []
 
-    def get_activity_summary(self, start_time: datetime, end_time: datetime) -> Dict:
-        """Get activity summary for a time period."""
+    def get_activity_summary(self, start: datetime, end: datetime) -> Dict:
         try:
-            logs = self.db.get_activity_logs_between(start_time, end_time)
-            
-            # Calculate summary statistics
-            app_usage = {}
-            total_time = 0
+            logs = self.db.get_activity_logs_between(start, end)
+            usage: Dict[str, float] = {}
+            total = 0.0
             last_time = None
             last_app = None
 
-            for log in logs:
-                current_time = datetime.fromisoformat(log["created_at"])
-                
+            for entry in logs:
+                ts = datetime.fromisoformat(entry["created_at"])
                 if last_time and last_app:
-                    time_diff = (current_time - last_time).total_seconds()
-                    app_usage[last_app] = app_usage.get(last_app, 0) + time_diff
-                    total_time += time_diff
-
-                last_time = current_time
-                last_app = log["app_name"]
+                    diff = (ts - last_time).total_seconds()
+                    usage[last_app] = usage.get(last_app, 0.0) + diff
+                    total += diff
+                last_time = ts
+                last_app = entry["app_name"]
 
             return {
-                "total_time": total_time,
-                "app_usage": app_usage,
-                "start_time": start_time.isoformat(),
-                "end_time": end_time.isoformat()
+                "total_time": total,
+                "app_usage": usage,
+                "start_time": start.isoformat(),
+                "end_time": end.isoformat()
             }
-
         except Exception as e:
-            logger.error(f"Error getting activity summary: {str(e)}")
-            return {
-                "total_time": 0,
-                "app_usage": {},
-                "start_time": start_time.isoformat(),
-                "end_time": end_time.isoformat()
-            }
+            logger.error(f"Error computing activity summary: {e}")
+            return {"total_time": 0, "app_usage": {}, "start_time": start.isoformat(), "end_time": end.isoformat()}
 
     def cleanup_old_activity(self, days: int = 7) -> None:
-        """Clean up activity logs older than specified days."""
         try:
-            cutoff_date = datetime.utcnow() - timedelta(days=days)
-            self.db.delete_old_activity_logs(cutoff_date)
-            logger.info(f"Cleaned up activity logs older than {days} days")
+            cutoff = datetime.utcnow() - timedelta(days=days)
+            self.db.delete_old_activity_logs(cutoff)
+            logger.info(f"Cleaned up logs older than {days} days")
         except Exception as e:
-            logger.error(f"Error cleaning up old activity: {str(e)}")
+            logger.error(f"Error cleaning up old activity: {e}")
 
     def close(self) -> None:
-        """Close the database connection."""
         try:
             self.db.close()
             logger.info("Activity collector closed")
         except Exception as e:
-            logger.error(f"Error closing activity collector: {str(e)}") 
+            logger.error(f"Error closing collector: {e}")

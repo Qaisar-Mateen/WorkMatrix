@@ -1,122 +1,192 @@
 import sys
 import time
 import platform
+import os
+import psutil
+import subprocess
 from datetime import datetime
 from typing import Optional, Dict
 from loguru import logger
+from src.utils.database import LocalDatabase
+import logging
 
+# Platform-specific imports
 if platform.system() == "Windows":
-    import psutil
     import win32gui
     import win32process
 elif platform.system() == "Darwin":
-    import psutil
-    from AppKit import NSWorkspace
+    try:
+        from AppKit import NSWorkspace, NSRunningApplication
+    except ImportError:
+        NSWorkspace = None
+        logger.warning("NSWorkspace not available. App usage tracking may be limited on macOS.")
 elif platform.system() == "Linux":
-    import psutil
     import subprocess
 
-class AppUsageCollector:
-    def __init__(self, user_id: str):
-        self.user_id = user_id
-        self.last_app: Optional[str] = None
-        self.last_title: Optional[str] = None
-        self.last_time: float = time.time()
-        self.usage_log = []  # List of (app_name, window_title, start_time, duration)
+logger = logging.getLogger(__name__)
 
-    def get_active_window(self) -> Dict[str, Optional[str]]:
+class AppUsageCollector:
+    def __init__(self, user_id: str, db=None):
+        self.user_id = user_id
+        self.current_app = None
+        self.current_window = None
+        self.start_time = None
+        self.last_flush_time = time.time()
+        self.flush_interval = 300  # 5 minutes
+        self.db = db if db is not None else LocalDatabase()  # Initialize with LocalDatabase if not provided
+        self.logger = logging.getLogger(__name__)
+
+    def get_active_window(self) -> Dict[str, str]:
+        """Get information about the currently active window."""
+        try:
         system = platform.system()
+            
         if system == "Windows":
+                return self._get_active_window_windows()
+            elif system == "Darwin":  # macOS
+                return self._get_active_window_macos()
+            elif system == "Linux":
+                return self._get_active_window_linux()
+            else:
+                self.logger.warning(f"Unsupported platform: {system}")
+                return {"app_name": "unknown", "window_title": "unknown"}
+                
+        except Exception as e:
+            self.logger.error(f"Error getting active window: {str(e)}")
+            return {"app_name": "error", "window_title": "error"}
+
+    def _get_active_window_windows(self) -> Dict[str, str]:
+        """Get active window info on Windows."""
             try:
                 hwnd = win32gui.GetForegroundWindow()
-                _, pid = win32process.GetWindowThreadProcessId(hwnd)
-                process = psutil.Process(pid)
+            window_title = win32gui.GetWindowText(hwnd)
+            _, process_id = win32process.GetWindowThreadProcessId(hwnd)
+            if process_id <= 0:
+                return {"app_name": "unknown", "window_title": "unknown"}
+            process = psutil.Process(process_id)
                 app_name = process.name()
-                window_title = win32gui.GetWindowText(hwnd)
-                return {"app_name": app_name, "window_title": window_title}
-            except Exception as e:
-                logger.error(f"Error getting active window (Windows): {e}")
-                return {"app_name": None, "window_title": None}
-        elif system == "Darwin":
-            try:
-                active_app = NSWorkspace.sharedWorkspace().frontmostApplication()
-                app_name = active_app.localizedName()
-                window_title = app_name  # macOS does not provide window title easily
-                return {"app_name": app_name, "window_title": window_title}
-            except Exception as e:
-                logger.error(f"Error getting active window (macOS): {e}")
-                return {"app_name": None, "window_title": None}
-        elif system == "Linux":
-            try:
-                # Try to get the active window using xprop and wmctrl
-                win_id = subprocess.check_output([
-                    'xprop', '-root', '_NET_ACTIVE_WINDOW'
-                ]).decode().strip().split()[-1]
-                win_id = win_id if win_id != '0x0' else None
-                if win_id:
-                    win_name = subprocess.check_output([
-                        'xprop', '-id', win_id, 'WM_NAME'
-                    ]).decode()
-                    window_title = win_name.split('=')[-1].strip().strip('"')
-                    # Try to get the PID
-                    pid_line = subprocess.check_output([
-                        'xprop', '-id', win_id, '_NET_WM_PID'
-                    ]).decode()
-                    pid = int(pid_line.split()[-1])
-                    app_name = psutil.Process(pid).name()
-                    return {"app_name": app_name, "window_title": window_title}
-                else:
-                    return {"app_name": None, "window_title": None}
-            except Exception as e:
-                logger.error(f"Error getting active window (Linux): {e}")
-                return {"app_name": None, "window_title": None}
-        else:
-            return {"app_name": None, "window_title": None}
-
-    def collect(self) -> Optional[Dict]:
-        now = time.time()
-        window_info = self.get_active_window()
-        app_name = window_info["app_name"]
-        window_title = window_info["window_title"]
-        if app_name is None:
-            return None
-        if (app_name != self.last_app) or (window_title != self.last_title):
-            # Log the previous app usage
-            if self.last_app is not None:
-                duration = int(now - self.last_time)
-                usage = {
-                    "user_id": self.user_id,
-                    "timestamp": datetime.now().isoformat(),
-                    "app_name": self.last_app,
-                    "window_title": self.last_title,
-                    "duration": duration
-                }
-                self.usage_log.append(usage)
-                logger.info(f"App usage: {usage}")
-            # Update last seen
-            self.last_app = app_name
-            self.last_title = window_title
-            self.last_time = now
-        # Return the most recent usage if available
-        if self.usage_log:
-            return self.usage_log.pop(0)
-        return None
-
-    def flush(self) -> Optional[Dict]:
-        # Call this on shutdown to log the last app usage
-        now = time.time()
-        if self.last_app is not None:
-            duration = int(now - self.last_time)
-            usage = {
-                "user_id": self.user_id,
-                "timestamp": datetime.now().isoformat(),
-                "app_name": self.last_app,
-                "window_title": self.last_title,
-                "duration": duration
+            return {
+                "app_name": app_name,
+                "window_title": window_title,
+                "cpu_usage": process.cpu_percent(),
+                "memory_usage": process.memory_info().rss
             }
-            self.last_app = None
-            self.last_title = None
-            self.last_time = now
-            logger.info(f"App usage (flush): {usage}")
-            return usage
-        return None 
+            except Exception as e:
+            self.logger.error(f"Error getting Windows window info: {str(e)}")
+            return {"app_name": "unknown", "window_title": "unknown"}
+
+    def _get_active_window_macos(self) -> Dict[str, str]:
+        """Get active window info on macOS."""
+        try:
+            if NSWorkspace is None:
+                return {"app_name": "unknown", "window_title": "unknown"}
+                
+            workspace = NSWorkspace.sharedWorkspace()
+            active_app = workspace.activeApplication()
+            
+            if not active_app:
+                return {"app_name": "unknown", "window_title": "unknown"}
+                
+            app_name = active_app.get('NSApplicationName', 'unknown')
+            window_title = app_name  # Use app name as window title on macOS
+            
+            return {
+                "app_name": app_name,
+                "window_title": window_title,
+                "cpu_usage": 0,  # macOS doesn't provide easy CPU usage
+                "memory_usage": 0  # macOS doesn't provide easy memory usage
+            }
+            except Exception as e:
+            self.logger.error(f"Error getting macOS window info: {str(e)}")
+            return {"app_name": "unknown", "window_title": "unknown"}
+
+    def _get_active_window_linux(self) -> Dict[str, str]:
+        """Get active window info on Linux."""
+            try:
+            # Get active window ID
+            window_id = subprocess.check_output(['xdotool', 'getactivewindow']).decode().strip()
+            if not window_id:
+                return {"app_name": "unknown", "window_title": "unknown"}
+            
+            # Get window title
+            window_title = subprocess.check_output(['xdotool', 'getwindowname', window_id]).decode().strip()
+            
+            # Get process ID
+            pid_str = subprocess.check_output(['xdotool', 'getwindowpid', window_id]).decode().strip()
+            if not pid_str:
+                return {"app_name": "unknown", "window_title": "unknown"}
+                
+            pid = int(pid_str)
+            process = psutil.Process(pid)
+            app_name = process.name()
+            
+            return {
+                "app_name": app_name,
+                "window_title": window_title,
+                "cpu_usage": process.cpu_percent(),
+                "memory_usage": process.memory_info().rss
+            }
+            except Exception as e:
+            self.logger.error(f"Error getting Linux window info: {str(e)}")
+            return {"app_name": "unknown", "window_title": "unknown"}
+
+    def collect(self) -> Dict[str, str]:
+        """Collect app usage data."""
+        try:
+        window_info = self.get_active_window()
+            current_time = time.time()
+            
+            if (self.current_app != window_info["app_name"] or 
+                self.current_window != window_info["window_title"] or 
+                current_time - self.last_flush_time >= self.flush_interval):
+                
+                if self.start_time is not None and self.db is not None:
+                    duration = int(current_time - self.start_time)
+                    if duration > 0:
+                        self.db.insert_app_usage(
+                            user_id=self.user_id,
+                            timestamp=datetime.fromtimestamp(self.start_time).isoformat(),
+                            app_name=self.current_app,
+                            window_title=self.current_window,
+                            duration=duration
+                        )
+                
+                self.current_app = window_info["app_name"]
+                self.current_window = window_info["window_title"]
+                self.start_time = current_time
+                self.last_flush_time = current_time
+            
+            return window_info
+        except Exception as e:
+            self.logger.error(f"Error collecting app usage: {str(e)}")
+            raise
+
+    def flush(self):
+        """Flush any remaining app usage data."""
+        try:
+            if self.start_time is not None and self.db is not None:
+                current_time = time.time()
+                duration = int(current_time - self.start_time)
+                if duration > 0:
+                    self.db.insert_app_usage(
+                        user_id=self.user_id,
+                        timestamp=datetime.fromtimestamp(self.start_time).isoformat(),
+                        app_name=self.current_app,
+                        window_title=self.current_window,
+                        duration=duration
+                    )
+                    self.logger.info(f"App usage (flush): {{'user_id': '{self.user_id}', 'timestamp': '{datetime.fromtimestamp(self.start_time).isoformat()}', 'app_name': '{self.current_app}', 'window_title': '{self.current_window}', 'duration': {duration}}}")
+                self.start_time = None
+        except Exception as e:
+            self.logger.error(f"Error flushing app usage: {str(e)}")
+            raise
+
+    def close(self):
+        """Clean up resources."""
+        try:
+            self.flush()
+            if self.db:
+                self.db.close()
+        except Exception as e:
+            self.logger.error(f"Error closing app usage collector: {str(e)}")
+            raise 

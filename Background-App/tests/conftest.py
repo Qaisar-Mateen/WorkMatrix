@@ -3,10 +3,17 @@ import os
 import tempfile
 import asyncio
 from typing import Generator, AsyncGenerator
-from ..src.utils.event_manager import EventManager
-from ..src.utils.resource_manager import ResourceManager
-from ..src.utils.sync_manager import SyncManager
-from ..src.utils.sqlite_manager import SQLiteManager
+import sys
+from datetime import datetime, timedelta
+
+# Add the src directory to the Python path
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'src')))
+
+from utils.event_manager import EventManager
+from utils.database import LocalDatabase
+from utils.sqlite_manager import SQLiteManager
+from utils.resource_manager import ResourceManager
+from utils.sync_manager import SyncManager
 
 @pytest.fixture
 def temp_dir():
@@ -76,4 +83,74 @@ async def sample_events():
             'data': {'title': 'Test Window', 'app': 'TestApp'},
             'timestamp': '2024-03-20T10:00:02'
         }
-    ] 
+    ]
+
+@pytest.fixture
+def test_user_id():
+    return "test_user"
+
+@pytest.fixture
+def test_db():
+    db = LocalDatabase()
+    yield db
+    db.close()
+
+@pytest.fixture
+def test_sqlite_db():
+    db = SQLiteManager(":memory:")
+    yield db
+    db.close()
+
+@pytest.fixture
+def test_event_manager():
+    manager = EventManager()
+    yield manager
+    manager.close()
+
+@pytest.fixture
+def test_resource_manager():
+    manager = ResourceManager()
+    yield manager
+    manager.close()
+
+@pytest.fixture
+def test_sync_manager():
+    manager = SyncManager()
+    yield manager
+    manager.close()
+
+@pytest.fixture
+def test_datetime():
+    return datetime.now()
+
+@pytest.fixture
+def test_datetime_old():
+    return datetime.now() - timedelta(days=31)
+
+@pytest.fixture
+def test_screenshot_data():
+    return {
+        "user_id": "test_user",
+        "timestamp": datetime.now().isoformat(),
+        "file_path": "test_screenshot.png",
+        "size": (1920, 1080)
+    }
+
+@pytest.fixture
+def test_recording_data():
+    return {
+        "user_id": "test_user",
+        "timestamp": datetime.now().isoformat(),
+        "file_path": "test_recording.mp4",
+        "duration": 30
+    }
+
+@pytest.fixture
+def test_app_usage_data():
+    return {
+        "user_id": "test_user",
+        "timestamp": datetime.now().isoformat(),
+        "app_name": "test_app",
+        "window_title": "Test Window",
+        "duration": 300
+    } 
